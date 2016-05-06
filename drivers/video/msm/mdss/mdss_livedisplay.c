@@ -279,7 +279,6 @@ out:
 	if (mlc->updated & MODE_RGB)
 		mdss_livedisplay_update_pcc(mlc);
 
-out:
 	mlc->updated = 0;
 	mutex_unlock(&mlc->lock);
 }
