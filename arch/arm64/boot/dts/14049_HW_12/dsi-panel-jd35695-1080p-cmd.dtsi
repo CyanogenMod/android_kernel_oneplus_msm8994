@@ -157,6 +157,8 @@ dsi_jd35695_1080_cmd: qcom,mdss_dsi_jd35695_1080p_cmd {
 			      qcom,mdss-dsi-lane-3-state;
 			      qcom,mdss-dsi-panel-timings = [E7 43 37 00 60 6C 39 45 5b 03 04 00];
 
+
+
 			      qcom,mdss-dsi-t-clk-post = <0x20>;
 			      qcom,mdss-dsi-t-clk-pre = <0x3e>;
 			      qcom,mdss-dsi-dma-trigger = "trigger_sw";
@@ -167,6 +169,9 @@ dsi_jd35695_1080_cmd: qcom,mdss_dsi_jd35695_1080p_cmd {
 			      qcom,mdss-dsi-te-dcs-command = <1>;
 			      qcom,mdss-dsi-te-check-enable;
 			      qcom,mdss-dsi-te-using-te-pin;
+
+
+
 
 			      qcom,mdss-dsi-bl-min-level = <1>;
 			      qcom,mdss-dsi-bl-max-level = <4095>;/*guozhiming@oem.cn modify 2015-03-24*/
@@ -187,21 +192,18 @@ dsi_jd35695_1080_cmd: qcom,mdss_dsi_jd35695_1080p_cmd {
 
 
 			     // qcom,mdss-tear-check-frame-rate=<6000>;
-			      //qcom,mdss-tear-check-sync-cfg-height = <1932>; /* Height + VBP + VFP + VSW */
-			      //qcom,mdss-tear-check-sync-init-val= <1920>; /* Height */
+			     // qcom,mdss-tear-check-sync-cfg-height = <1932>; /* Height + VBP + VFP + VSW */
+			     // qcom,mdss-tear-check-sync-init-val= <1920>; /* Height */
 			      //qcom,mdss-tear-check-sync-threshold-start = <4>;
-			      //qcom,mdss-tear-check-sync-threshold-continue = <4>;
-			      //qcom,mdss-tear-check-start-pos= <1920>; /* Height */
-			      //qcom,mdss-tear-check-rd-ptr-trigger-intr= <1921>; /* Height + 1 */
+			     // qcom,mdss-tear-check-sync-threshold-continue = <4>;
+			     // qcom,mdss-tear-check-start-pos= <1920>; /* Height */
+			     // qcom,mdss-tear-check-rd-ptr-trigger-intr= <1921>; /* Height + 1 */
 
-				qcom,mdss-pan-physical-width-dimension = <70>;
-				qcom,mdss-pan-physical-height-dimension = <127>;
-				qcom,mdss-dsi-pan-enable-dynamic-fps;
-				qcom,mdss-dsi-pan-fps-update = "dfps_immediate_porch_mode";
-				qcom,mdss-dsi-min-refresh-rate = <53>;
-				qcom,mdss-dsi-max-refresh-rate = <60>;
+				  qcom,mdss-pan-physical-width-dimension = <70>;
+				  qcom,mdss-pan-physical-height-dimension = <127>;
 
-			        qcom,mdss-dsi-bl-pmic-control-type = "bl_ctrl_wled";
+
+			      qcom,mdss-dsi-bl-pmic-control-type = "bl_ctrl_wled";
 			        qcom,mdss-dsi-reset-sequence = <1 11>, <0 2>, <1 12>;
 
 		      };
