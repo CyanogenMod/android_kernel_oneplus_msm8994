@@ -163,6 +163,20 @@ static rx_handler_result_t rmnet_bridge_handler(struct sk_buff *skb,
 	return RX_HANDLER_CONSUMED;
 }
 
+#ifdef NET_SKBUFF_DATA_USES_OFFSET
+static void rmnet_reset_mac_header(struct sk_buff *skb)
+{
+	skb->mac_header = 0;
+	skb->mac_len = 0;
+}
+#else
+static void rmnet_reset_mac_header(struct sk_buff *skb)
+{
+	skb->mac_header = skb->data;
+	skb->mac_len = 0;
+}
+#endif /*NET_SKBUFF_DATA_USES_OFFSET*/
+
 /**
  * __rmnet_deliver_skb() - Deliver skb
  *
@@ -176,6 +190,9 @@ static rx_handler_result_t rmnet_bridge_handler(struct sk_buff *skb,
 static rx_handler_result_t __rmnet_deliver_skb(struct sk_buff *skb,
 					 struct rmnet_logical_ep_conf_s *ep)
 {
+	struct napi_struct *napi = NULL;
+	gro_result_t gro_res;
+
 	trace___rmnet_deliver_skb(skb);
 	switch (ep->rmnet_mode) {
 	case RMNET_EPMODE_NONE:
@@ -193,7 +210,19 @@ static rx_handler_result_t __rmnet_deliver_skb(struct sk_buff *skb,
 
 		case RX_HANDLER_PASS:
 			skb->pkt_type = PACKET_HOST;
-			netif_receive_skb(skb);
+			rmnet_reset_mac_header(skb);
+			if (skb->dev->features & NETIF_F_GRO) {
+				napi = get_current_napi_context();
+				if (napi != NULL) {
+					gro_res = napi_gro_receive(napi, skb);
+					trace_rmnet_gro_downlink(gro_res);
+				} else {
+					WARN_ONCE(1, "current napi is NULL\n");
+					netif_receive_skb(skb);
+				}
+			} else {
+				netif_receive_skb(skb);
+			}
 			return RX_HANDLER_CONSUMED;
 		}
 		return RX_HANDLER_PASS;
@@ -244,7 +273,7 @@ static rx_handler_result_t rmnet_ingress_deliver_packet(struct sk_buff *skb,
  * @config:     Physical endpoint configuration for the ingress device
  *
  * Most MAP ingress functions are processed here. Packets are processed
- * individually; aggregates packets should use rmnet_map_ingress_handler()
+ * individually; aggregated packets should use rmnet_map_ingress_handler()
  *
  * Return:
  *      - RX_HANDLER_CONSUMED if packet is dropped
@@ -257,6 +286,18 @@ static rx_handler_result_t _rmnet_map_ingress_handler(struct sk_buff *skb,
 	uint8_t mux_id;
 	uint16_t len;
 	int ckresult;
+
+	if (RMNET_MAP_GET_CD_BIT(skb)) {
+		if (config->ingress_data_format
+		    & RMNET_INGRESS_FORMAT_MAP_COMMANDS)
+			return rmnet_map_command(skb, config);
+
+		LOGM("MAP command packet on %s; %s", skb->dev->name,
+		     "Not configured for MAP commands");
+		rmnet_kfree_skb(skb,
+				RMNET_STATS_SKBFREE_INGRESS_NOT_EXPECT_MAPC);
+		return RX_HANDLER_CONSUMED;
+	}
 
 	mux_id = RMNET_MAP_GET_MUX_ID(skb);
 	len = RMNET_MAP_GET_LENGTH(skb)
@@ -305,7 +346,6 @@ static rx_handler_result_t _rmnet_map_ingress_handler(struct sk_buff *skb,
 	skb_pull(skb, sizeof(struct rmnet_map_header_s));
 	skb_trim(skb, len);
 	__rmnet_data_set_skb_proto(skb);
-
 	return __rmnet_deliver_skb(skb, ep);
 }
 
@@ -476,20 +516,7 @@ rx_handler_result_t rmnet_ingress_handler(struct sk_buff *skb)
 	}
 
 	if (config->ingress_data_format & RMNET_INGRESS_FORMAT_MAP) {
-		if (RMNET_MAP_GET_CD_BIT(skb)) {
-			if (config->ingress_data_format
-			    & RMNET_INGRESS_FORMAT_MAP_COMMANDS) {
-				rc = rmnet_map_command(skb, config);
-			} else {
-				LOGM("MAP command packet on %s; %s", dev->name,
-				     "Not configured for MAP commands");
-				rmnet_kfree_skb(skb,
-				   RMNET_STATS_SKBFREE_INGRESS_NOT_EXPECT_MAPC);
-				return RX_HANDLER_CONSUMED;
-			}
-		} else {
 			rc = rmnet_map_ingress_handler(skb, config);
-		}
 	} else {
 		switch (ntohs(skb->protocol)) {
 		case ETH_P_MAP:

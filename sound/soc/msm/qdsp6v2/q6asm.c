@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2012-2015, The Linux Foundation. All rights reserved.
- * Author: Brian Swetland  <swetland@google.com>
+ * Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+ * Author: Brian Swetland <swetland@google.com>
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -419,6 +419,7 @@ static void q6asm_session_free(struct audio_client *ac)
 {
 	struct list_head		*ptr, *next;
 	struct asm_no_wait_node		*node;
+	unsigned long			flags;
 
 	pr_debug("%s: sessionid[%d]\n", __func__, ac->session);
 	rtac_remove_popp_from_adm_devices(ac->session);
@@ -427,12 +428,13 @@ static void q6asm_session_free(struct audio_client *ac)
 	ac->perf_mode = LEGACY_PCM_MODE;
 	ac->fptr_cache_ops = NULL;
 
+	spin_lock_irqsave(&ac->no_wait_que_spinlock, flags);
 	list_for_each_safe(ptr, next, &ac->no_wait_que) {
 		node = list_entry(ptr, struct asm_no_wait_node, list);
 		list_del(&node->list);
 		kfree(node);
 	}
-	list_del(&ac->no_wait_que);
+	spin_unlock_irqrestore(&ac->no_wait_que_spinlock, flags);
 	return;
 }
 
@@ -1052,12 +1054,15 @@ struct audio_client *q6asm_audio_client_alloc(app_cb cb, void *priv)
 	}
 	ac->session = n;
 	ac->cb = cb;
+	ac->path_delay = UINT_MAX;
 	ac->priv = priv;
 	ac->io_mode = SYNC_IO_MODE;
 	ac->perf_mode = LEGACY_PCM_MODE;
 	ac->fptr_cache_ops = NULL;
 	/* DSP expects stream id from 1 */
 	ac->stream_id = 1;
+	INIT_LIST_HEAD(&ac->no_wait_que);
+	spin_lock_init(&ac->no_wait_que_spinlock);
 	ac->apr = apr_register("ADSP", "ASM", \
 			(apr_fn)q6asm_callback,\
 			((ac->session) << 8 | 0x0001),\
@@ -1103,8 +1108,6 @@ struct audio_client *q6asm_audio_client_alloc(app_cb cb, void *priv)
 	}
 	atomic_set(&ac->cmd_state, 0);
 	atomic_set(&ac->nowait_cmd_cnt, 0);
-	spin_lock_init(&ac->no_wait_que_spinlock);
-	INIT_LIST_HEAD(&ac->no_wait_que);
 	atomic_set(&ac->mem_state, 0);
 
 	rc = send_asm_custom_topology(ac);
@@ -1823,6 +1826,20 @@ static int32_t q6asm_callback(struct apr_client_data *data, void *priv)
 				 __func__,
 				payload[0], payload[1], payload[2],
 				payload[3]);
+		break;
+	case ASM_SESSION_CMDRSP_GET_PATH_DELAY_V2:
+		pr_debug("%s: ASM_SESSION_CMDRSP_GET_PATH_DELAY_V2 session %d status 0x%x msw %u lsw %u\n",
+				__func__, ac->session, payload[0], payload[2],
+				payload[1]);
+		if (payload[0] == 0) {
+			atomic_set(&ac->cmd_state, 0);
+			/* ignore msw, as a delay that large shouldn't happen */
+			ac->path_delay = payload[1];
+		} else {
+			atomic_set(&ac->cmd_state, -payload[0]);
+			ac->path_delay = UINT_MAX;
+		}
+		wake_up(&ac->cmd_wait);
 		break;
 	}
 	if (ac->cb)
@@ -3582,7 +3599,7 @@ int q6asm_stream_media_format_block_aac(struct audio_client *ac,
 }
 
 int q6asm_media_format_block_wma(struct audio_client *ac,
-				void *cfg)
+				void *cfg, int stream_id)
 {
 	struct asm_wmastdv9_fmt_blk_v2 fmt;
 	struct asm_wma_cfg *wma_cfg = (struct asm_wma_cfg *)cfg;
@@ -3594,7 +3611,7 @@ int q6asm_media_format_block_wma(struct audio_client *ac,
 		wma_cfg->block_align, wma_cfg->valid_bits_per_sample,
 		wma_cfg->ch_mask, wma_cfg->encode_opt);
 
-	q6asm_add_hdr(ac, &fmt.hdr, sizeof(fmt), TRUE);
+	q6asm_stream_add_hdr(ac, &fmt.hdr, sizeof(fmt), TRUE, stream_id);
 	atomic_set(&ac->cmd_state, 1);
 
 	fmt.hdr.opcode = ASM_DATA_CMD_MEDIA_FMT_UPDATE_V2;
@@ -3632,7 +3649,7 @@ fail_cmd:
 }
 
 int q6asm_media_format_block_wmapro(struct audio_client *ac,
-				void *cfg)
+				void *cfg, int stream_id)
 {
 	struct asm_wmaprov10_fmt_blk_v2 fmt;
 	struct asm_wmapro_cfg *wmapro_cfg = (struct asm_wmapro_cfg *)cfg;
@@ -3646,7 +3663,7 @@ int q6asm_media_format_block_wmapro(struct audio_client *ac,
 		wmapro_cfg->ch_mask, wmapro_cfg->encode_opt,
 		wmapro_cfg->adv_encode_opt, wmapro_cfg->adv_encode_opt2);
 
-	q6asm_add_hdr(ac, &fmt.hdr, sizeof(fmt), TRUE);
+	q6asm_stream_add_hdr(ac, &fmt.hdr, sizeof(fmt), TRUE, stream_id);
 	atomic_set(&ac->cmd_state, 1);
 
 	fmt.hdr.opcode = ASM_DATA_CMD_MEDIA_FMT_UPDATE_V2;
@@ -4151,7 +4168,7 @@ static int q6asm_memory_unmap_regions(struct audio_client *ac, int dir)
 	struct audio_port_data *port = NULL;
 	struct asm_buffer_node *buf_node = NULL;
 	struct list_head *ptr, *next;
-	uint32_t buf_add;
+	phys_addr_t buf_add;
 	int	rc = 0;
 	int	cmd_size = 0;
 
@@ -4170,7 +4187,7 @@ static int q6asm_memory_unmap_regions(struct audio_client *ac, int dir)
 			TRUE, ((ac->session << 8) | dir));
 	atomic_set(&ac->mem_state, 1);
 	port = &ac->port[dir];
-	buf_add = (uint32_t)port->buf->phys;
+	buf_add = port->buf->phys;
 	mem_unmap.hdr.opcode = ASM_CMD_SHARED_MEM_UNMAP_REGIONS;
 	mem_unmap.mem_map_handle = 0;
 	list_for_each_safe(ptr, next, &ac->port[dir].mem_map_handle) {
@@ -5887,6 +5904,52 @@ int q6asm_reg_rx_underflow(struct audio_client *ac, uint16_t enable)
 	return 0;
 fail_cmd:
 	return -EINVAL;
+}
+
+/*
+ * q6asm_get_path_delay() - get the path delay for an audio session
+ * @ac: audio client handle
+ *
+ * Retrieves the current audio DSP path delay for the given audio session.
+ *
+ * Return: 0 on success, error code otherwise
+ */
+int q6asm_get_path_delay(struct audio_client *ac)
+{
+	int rc = 0;
+	struct apr_hdr hdr;
+
+	if (!ac || ac->apr == NULL) {
+		pr_err("%s: invalid audio client\n", __func__);
+		return -EINVAL;
+	}
+
+	hdr.opcode = ASM_SESSION_CMD_GET_PATH_DELAY_V2;
+	q6asm_add_hdr(ac, &hdr, sizeof(hdr), TRUE);
+	atomic_set(&ac->cmd_state, 1);
+
+	rc = apr_send_pkt(ac->apr, (uint32_t *) &hdr);
+	if (rc < 0) {
+		pr_err("%s: Commmand 0x%x failed %d\n", __func__,
+				hdr.opcode, rc);
+		return rc;
+	}
+
+	rc = wait_event_timeout(ac->cmd_wait,
+			(atomic_read(&ac->cmd_state) <= 0), 5 * HZ);
+	if (!rc) {
+		pr_err("%s: timeout. waited for response opcode[0x%x]\n",
+				__func__, hdr.opcode);
+		return -ETIMEDOUT;
+	}
+
+	rc = atomic_read(&ac->cmd_state);
+	if (rc < 0) {
+		pr_err("%s: DSP returned error[0x%x]\n", __func__, rc);
+		return -EINVAL;
+	}
+
+	return 0;
 }
 
 int q6asm_get_apr_service_id(int session_id)

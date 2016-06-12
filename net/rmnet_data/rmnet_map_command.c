@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2014, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -103,6 +103,7 @@ static uint8_t rmnet_map_do_flow_control(struct sk_buff *skb,
  * rmnet_map_send_ack() - Send N/ACK message for MAP commands
  * @skb: Socket buffer containing the MAP command message
  * @type: N/ACK message selector
+ * @config: Physical end-point configuration of ingress device
  *
  * skb is modified to contain the message type selector. The message is then
  * transmitted on skb->dev. Note that this function grabs global Tx lock on
@@ -112,24 +113,39 @@ static uint8_t rmnet_map_do_flow_control(struct sk_buff *skb,
  *      - void
  */
 static void rmnet_map_send_ack(struct sk_buff *skb,
-			       unsigned char type)
+			       unsigned char type,
+			       struct rmnet_phys_ep_conf_s *config)
 {
-	struct net_device *dev;
 	struct rmnet_map_control_command_s *cmd;
-	unsigned long flags;
 	int xmit_status;
 
-	if (!skb)
+	if (unlikely(!skb))
 		BUG();
 
-	dev = skb->dev;
+	skb->protocol = htons(ETH_P_MAP);
+
+	if ((config->ingress_data_format & RMNET_INGRESS_FORMAT_MAP_CKSUMV3) ||
+	    (config->ingress_data_format & RMNET_INGRESS_FORMAT_MAP_CKSUMV4)) {
+		if (unlikely(skb->len < (sizeof(struct rmnet_map_header_s) +
+		    + RMNET_MAP_GET_LENGTH(skb)
+		    + sizeof(struct rmnet_map_dl_checksum_trailer_s)))) {
+			rmnet_stats_dl_checksum(
+			  RMNET_MAP_CHECKSUM_ERR_BAD_BUFFER);
+			return;
+		}
+
+		skb_trim(skb, skb->len -
+			 sizeof(struct rmnet_map_dl_checksum_trailer_s));
+	}
 
 	cmd = RMNET_MAP_GET_CMD_START(skb);
 	cmd->cmd_type = type & 0x03;
 
-	spin_lock_irqsave(&(skb->dev->tx_global_lock), flags);
+	netif_tx_lock(skb->dev);
 	xmit_status = skb->dev->netdev_ops->ndo_start_xmit(skb, skb->dev);
-	spin_unlock_irqrestore(&(skb->dev->tx_global_lock), flags);
+	netif_tx_unlock(skb->dev);
+
+	LOGD("MAP command ACK=%hhu sent with rc: %d", type & 0x03, xmit_status);
 }
 
 /**
@@ -174,6 +190,6 @@ rx_handler_result_t rmnet_map_command(struct sk_buff *skb,
 		rc = RMNET_MAP_COMMAND_UNSUPPORTED;
 		break;
 	}
-	rmnet_map_send_ack(skb, rc);
+	rmnet_map_send_ack(skb, rc, config);
 	return RX_HANDLER_CONSUMED;
 }

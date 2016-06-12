@@ -45,7 +45,8 @@
 
 #define WCD9XXX_JACK_MASK (SND_JACK_HEADSET | SND_JACK_OC_HPHL | \
 			   SND_JACK_OC_HPHR | SND_JACK_LINEOUT | \
-			   SND_JACK_UNSUPPORTED | SND_JACK_MICROPHONE2)
+			   SND_JACK_UNSUPPORTED | SND_JACK_MICROPHONE2 | \
+			   SND_JACK_MECHANICAL)
 #define WCD9XXX_JACK_BUTTON_MASK (SND_JACK_BTN_0 | SND_JACK_BTN_1 | \
 				  SND_JACK_BTN_2 | SND_JACK_BTN_3 | \
 				  SND_JACK_BTN_4 | SND_JACK_BTN_5 | \
@@ -160,6 +161,12 @@
 #define WCD9XXX_IS_IN_ZDET_ZONE_3(x) (x > WCD9XXX_ZDET_ZONE_2 ? 1 : 0)
 #define WCD9XXX_BOX_CAR_AVRG_MIN 1
 #define WCD9XXX_BOX_CAR_AVRG_MAX 10
+
+/* Android L spec
+ * Need to report LINEIN if H/L impedance
+ * is larger than 5K ohm
+ */
+#define WCD9XXX_LINEIN_THRESHOLD 5000000
 
 static int impedance_detect_en;
 module_param(impedance_detect_en, int,
@@ -909,6 +916,7 @@ static void wcd9xxx_report_plug(struct wcd9xxx_mbhc *mbhc, int insertion,
 		hphrocp_off_report(mbhc, SND_JACK_OC_HPHR);
 		hphlocp_off_report(mbhc, SND_JACK_OC_HPHL);
 		mbhc->current_plug = PLUG_TYPE_NONE;
+		mbhc->force_linein = false;
 		mbhc->polling_active = false;
 		if (mbhc->mbhc_cb && mbhc->mbhc_cb->hph_auto_pulldown_ctrl)
 			mbhc->mbhc_cb->hph_auto_pulldown_ctrl(mbhc->codec,
@@ -940,6 +948,7 @@ static void wcd9xxx_report_plug(struct wcd9xxx_mbhc *mbhc, int insertion,
 						SND_JACK_LINEOUT |
 						SND_JACK_ANC_HEADPHONE |
 						SND_JACK_UNSUPPORTED);
+			mbhc->force_linein = false;
 			if (mbhc->mbhc_cb &&
 				 mbhc->mbhc_cb->hph_auto_pulldown_ctrl)
 				mbhc->mbhc_cb->hph_auto_pulldown_ctrl(
@@ -948,8 +957,6 @@ static void wcd9xxx_report_plug(struct wcd9xxx_mbhc *mbhc, int insertion,
 		}
 
 		/* Report insertion */
-		mbhc->hph_status |= jack_type;
-
 		if (jack_type == SND_JACK_HEADPHONE) {
 			mbhc->current_plug = PLUG_TYPE_HEADPHONE;
 		} else if (jack_type == SND_JACK_UNSUPPORTED) {
@@ -965,14 +972,27 @@ static void wcd9xxx_report_plug(struct wcd9xxx_mbhc *mbhc, int insertion,
 			mbhc->current_plug = PLUG_TYPE_ANC_HEADPHONE;
 		}
 
+		if (mbhc->impedance_detect && impedance_detect_en) {
+			wcd9xxx_detect_impedance(mbhc,
+					&mbhc->zl, &mbhc->zr);
+			if ((mbhc->zl > WCD9XXX_LINEIN_THRESHOLD) &&
+			    (mbhc->zr > WCD9XXX_LINEIN_THRESHOLD) &&
+			    (jack_type == SND_JACK_HEADPHONE)) {
+				jack_type = SND_JACK_LINEOUT;
+				mbhc->current_plug = PLUG_TYPE_HIGH_HPH;
+				mbhc->force_linein = true;
+				pr_debug("%s: Replace with SND_JACK_LINEOUT\n",
+				__func__);
+			}
+		}
+
+		mbhc->hph_status |= jack_type;
+
 		if (mbhc->micbias_enable && mbhc->micbias_enable_cb) {
 			pr_debug("%s: Enabling micbias\n", __func__);
 			mbhc->micbias_enable_cb(mbhc->codec, true,
 						mbhc->mbhc_cfg->micbias);
 		}
-
-		if (mbhc->impedance_detect && impedance_detect_en)
-			wcd9xxx_detect_impedance(mbhc, &mbhc->zl, &mbhc->zr);
 
 		pr_debug("%s: Reporting insertion %d(%x)\n", __func__,
 			 jack_type, mbhc->hph_status);
@@ -1002,7 +1022,8 @@ static void wcd9xxx_report_plug(struct wcd9xxx_mbhc *mbhc, int insertion,
 	      
 	#endif
 		wcd9xxx_jack_report(mbhc, &mbhc->headset_jack,
-				    mbhc->hph_status, WCD9XXX_JACK_MASK);
+				    (mbhc->hph_status | SND_JACK_MECHANICAL),
+				    WCD9XXX_JACK_MASK);
 		/*
 		 * if PA is already on, switch micbias
 		 * source to VDDIO
@@ -3169,6 +3190,7 @@ static inline void wcd9xxx_handle_gnd_mic_swap(struct wcd9xxx_mbhc *mbhc,
 		 * otherwise report unsupported plug
 		 */
 		mbhc->mbhc_cfg->swap_gnd_mic(mbhc->codec);
+		mbhc->is_jack_type_swchd = true;
 	} else if (pt_gnd_mic_swap_cnt >= GND_MIC_SWAP_THRESHOLD) {
 		/* Report UNSUPPORTED plug
 		 * and continue polling
@@ -3185,6 +3207,7 @@ static inline void wcd9xxx_handle_gnd_mic_swap(struct wcd9xxx_mbhc *mbhc,
 		if (mbhc->current_plug != plug_type)
 			wcd9xxx_report_plug(mbhc, 1,
 					SND_JACK_UNSUPPORTED);
+		mbhc->is_jack_type_swchd = false;
 		WCD9XXX_BCL_UNLOCK(mbhc->resmgr);
 	}
 }
@@ -3282,6 +3305,8 @@ static void wcd9xxx_correct_swch_plug(struct work_struct *work)
 			}
 		} else if (plug_type == PLUG_TYPE_HEADPHONE) {
 			pr_debug("Good headphone detected, continue polling\n");
+			if (mbhc->force_linein)
+				continue;
 			WCD9XXX_BCL_LOCK(mbhc->resmgr);
 			if (mbhc->mbhc_cfg->detect_extn_cable) {
 				if (mbhc->current_plug != plug_type)
@@ -3486,6 +3511,13 @@ static void wcd9xxx_swch_irq_handler(struct wcd9xxx_mbhc *mbhc)
 					    0x08, 0x00);
 			/* Turn off override */
 			wcd9xxx_turn_onoff_override(mbhc, false);
+
+			/* Set the jack switch to default */
+			if (mbhc->is_jack_type_swchd) {
+				mbhc->mbhc_cfg->swap_gnd_mic(codec);
+				mbhc->is_jack_type_swchd = false;
+				pr_debug("%s: Set the switch back", __func__);
+			}
 		}
 	}
 exit:
@@ -3751,8 +3783,8 @@ irqreturn_t wcd9xxx_dce_handler(int irq, void *data)
 	mbhc->mbhc_state = MBHC_STATE_POTENTIAL;
 
 	if (!mbhc->polling_active) {
-		pr_warn("%s: mbhc polling is not active, skip button press\n",
-			__func__);
+		pr_debug("%s: mbhc polling is not active, skip button press\n",
+			 __func__);
 		goto done;
 	}
 
@@ -4311,7 +4343,10 @@ static void wcd9xxx_mbhc_setup(struct wcd9xxx_mbhc *mbhc)
 	gain = wcd9xxx_mbhc_cal_btn_det_mp(btn_det, MBHC_BTN_DET_GAIN);
 	snd_soc_update_bits(codec, WCD9XXX_A_CDC_MBHC_B2_CTL, 0x78,
 			    gain[idx] << 3);
-	snd_soc_update_bits(codec, WCD9XXX_A_MICB_2_MBHC, 0x04, 0x04);
+	if (mbhc->mbhc_cb && mbhc->mbhc_cb->get_cdc_type &&
+			mbhc->mbhc_cb->get_cdc_type() !=
+				WCD9XXX_CDC_TYPE_TOMTOM)
+		snd_soc_update_bits(codec, WCD9XXX_A_MICB_2_MBHC, 0x04, 0x04);
 
 	pr_debug("%s: leave\n", __func__);
 }
@@ -5536,6 +5571,7 @@ int wcd9xxx_mbhc_init(struct wcd9xxx_mbhc *mbhc, struct wcd9xxx_resmgr *resmgr,
 	mbhc->intr_ids = mbhc_cdc_intr_ids;
 	mbhc->impedance_detect = impedance_det_en;
 	mbhc->hph_type = MBHC_HPH_NONE;
+	mbhc->is_jack_type_swchd = mbhc->is_jack_type_swchd;
 
 	if (mbhc->intr_ids == NULL) {
 		pr_err("%s: Interrupt mapping not provided\n", __func__);
@@ -5585,6 +5621,9 @@ int wcd9xxx_mbhc_init(struct wcd9xxx_mbhc *mbhc, struct wcd9xxx_resmgr *resmgr,
 			return ret;
 		}
 #endif /* VENDOR_EDIT */
+
+		set_bit(INPUT_PROP_NO_DUMMY_RELEASE,
+			mbhc->button_jack.jack->input_dev->propbit);
 
 		INIT_DELAYED_WORK(&mbhc->mbhc_firmware_dwork,
 				  wcd9xxx_mbhc_fw_read);

@@ -55,6 +55,8 @@ struct agg_work {
 	struct rmnet_phys_ep_conf_s *config;
 };
 
+#define RMNET_MAP_DEAGGR_SPACING  64
+#define RMNET_MAP_DEAGGR_HEADROOM (RMNET_MAP_DEAGGR_SPACING/2)
 /******************************************************************************/
 
 /**
@@ -115,10 +117,10 @@ struct rmnet_map_header_s *rmnet_map_add_map_header(struct sk_buff *skb,
  * @skb:        Source socket buffer containing multiple MAP frames
  * @config:     Physical endpoint configuration of the ingress device
  *
- * Source skb is cloned with skb_clone(). The new skb data and tail pointers are
- * modified to contain a single MAP frame. Clone happens with GFP_ATOMIC flags
- * set. User should keep calling deaggregate() on the source skb until 0 is
- * returned, indicating that there are no more packets to deaggregate.
+ * A whole new buffer is allocated for each portion of an aggregated frame.
+ * Caller should keep calling deaggregate() on the source skb until 0 is
+ * returned, indicating that there are no more packets to deaggregate. Caller
+ * is responsible for freeing the original skb.
  *
  * Return:
  *     - Pointer to new skb
@@ -147,15 +149,16 @@ struct sk_buff *rmnet_map_deaggregate(struct sk_buff *skb,
 		return 0;
 	}
 
-	skbn = skb_clone(skb, GFP_ATOMIC);
+	skbn = alloc_skb(packet_len + RMNET_MAP_DEAGGR_SPACING, GFP_ATOMIC);
 	if (!skbn)
 		return 0;
 
-	LOGD("Trimming to %d bytes", packet_len);
-	LOGD("before skbn->len = %d", skbn->len);
-	skb_trim(skbn, packet_len);
+	skbn->dev = skb->dev;
+	skb_reserve(skbn, RMNET_MAP_DEAGGR_HEADROOM);
+	skb_put(skbn, packet_len);
+	memcpy(skbn->data, skb->data, packet_len);
 	skb_pull(skb, packet_len);
-	LOGD("after skbn->len = %d", skbn->len);
+
 
 	/* Some hardware can send us empty frames. Catch them */
 	if (ntohs(maph->pkt_len) == 0) {
@@ -166,7 +169,7 @@ struct sk_buff *rmnet_map_deaggregate(struct sk_buff *skb,
 
 	/* Sanity check */
 	ip_byte = (skbn->data[4]) & 0xF0;
-	if (ip_byte != 0x40 && ip_byte != 0x60) {
+	if (!RMNET_MAP_GET_CD_BIT(skbn) && ip_byte != 0x40 && ip_byte != 0x60) {
 		LOGM("Unknown IP type: 0x%02X", ip_byte);
 		rmnet_kfree_skb(skbn, RMNET_STATS_SKBFREE_DEAGG_UNKOWN_IP_TYP);
 		return 0;
@@ -632,8 +635,7 @@ static void rmnet_map_fill_ipv4_packet_ul_checksum_header(void *iphdr,
 
 	ul_header->checksum_start_offset = htons((unsigned short)
 		(skb_transport_header(skb) - (unsigned char *)iphdr));
-	ul_header->checksum_insert_offset = skb->csum_offset + (unsigned short)
-		(skb_transport_header(skb) - (unsigned char *)iphdr);
+	ul_header->checksum_insert_offset = skb->csum_offset;
 	ul_header->cks_en = 1;
 	if (ip4h->protocol == IPPROTO_UDP)
 		ul_header->udp_ip4_ind = 1;
@@ -652,8 +654,7 @@ static void rmnet_map_fill_ipv6_packet_ul_checksum_header(void *iphdr,
 
 	ul_header->checksum_start_offset = htons((unsigned short)
 		(skb_transport_header(skb) - (unsigned char *)iphdr));
-	ul_header->checksum_insert_offset = skb->csum_offset + (unsigned short)
-		(skb_transport_header(skb) - (unsigned char *)iphdr);
+	ul_header->checksum_insert_offset = skb->csum_offset;
 	ul_header->cks_en = 1;
 	ul_header->udp_ip4_ind = 0;
 	/* Changing checksum_insert_offset to network order */

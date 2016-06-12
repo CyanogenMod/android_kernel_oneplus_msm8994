@@ -905,8 +905,6 @@ static struct mdss_mdp_pipe *mdss_mdp_pipe_init(struct mdss_mdp_mixer *mixer,
 
 	if (pipe) {
 		pr_debug("type=%x   pnum=%d\n", pipe->type, pipe->num);
-		mutex_init(&pipe->pp_res.hist.hist_mutex);
-		spin_lock_init(&pipe->pp_res.hist.hist_lock);
 		mdss_mdp_init_pipe_params(pipe);
 		is_realtime = !((mixer->ctl->intf_num == MDSS_MDP_NO_INTF)
 				|| mixer->rotator_mode);
@@ -928,7 +926,7 @@ static struct mdss_mdp_pipe *mdss_mdp_pipe_init(struct mdss_mdp_mixer *mixer,
 
 cursor_done:
 	if (!pipe)
-		pr_err("no %d type pipes available\n", type);
+		pr_debug("no %d type pipes available\n", type);
 
 	return pipe;
 }
@@ -1049,7 +1047,7 @@ static void mdss_mdp_pipe_free(struct kref *kref)
 	mdss_mdp_pipe_panic_signal_ctrl(pipe, false);
 	if (pipe->play_cnt) {
 		mdss_mdp_pipe_fetch_halt(pipe);
-		mdss_mdp_pipe_sspp_term(pipe);
+		mdss_mdp_pipe_pp_clear(pipe);
 		mdss_mdp_smp_free(pipe);
 	} else {
 		mdss_mdp_smp_unreserve(pipe);
@@ -1426,6 +1424,7 @@ static int mdss_mdp_image_setup(struct mdss_mdp_pipe *pipe,
 
 	if (!pipe->mixer_left->ctl->is_video_mode &&
 	    (pipe->mixer_left->type != MDSS_MDP_MIXER_TYPE_WRITEBACK)) {
+
 		struct mdss_rect ctl_roi = pipe->mixer_left->ctl->roi;
 		bool is_right_mixer = pipe->mixer_left->is_right_mixer;
 		/* sctl can be NULL, check validity before use */
@@ -1435,6 +1434,7 @@ static int mdss_mdp_image_setup(struct mdss_mdp_pipe *pipe,
 		struct mdss_mdp_ctl *main_ctl =
 			mdss_mdp_get_main_ctl(pipe->mixer_left->ctl);
 
+		/* adjust roi or dst_x before crop is applied */
 		if (pipe->src_split_req && sctl)
 			ctl_roi.w += sctl->roi.w;
 		else if (mdata->has_src_split && is_right_mixer && main_ctl)
@@ -1442,8 +1442,9 @@ static int mdss_mdp_image_setup(struct mdss_mdp_pipe *pipe,
 
 		mdss_mdp_crop_rect(&src, &dst, &ctl_roi);
 
-		if (is_right_mixer && main_ctl) {
-			/* left + right */
+		/* re-adjust dst_x */
+		if (mdata->has_src_split && is_right_mixer && main_ctl) {
+			/* update valid on left + right */
 			if (main_ctl->valid_roi)
 				dst.x += main_ctl->roi.w;
 		}

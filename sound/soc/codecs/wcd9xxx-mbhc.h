@@ -420,12 +420,16 @@ struct wcd9xxx_mbhc {
 	/* Holds type of Headset - Mono/Stereo */
 	enum mbhc_hph_type hph_type;
 
+	bool is_jack_type_swchd;
+
 #ifdef CONFIG_DEBUG_FS
 	struct dentry *debugfs_poke;
 	struct dentry *debugfs_mbhc;
 #endif
 
 	struct mutex mbhc_lock;
+
+	bool force_linein;
 };
 
 #define WCD9XXX_MBHC_CAL_SIZE(buttons, rload) ( \

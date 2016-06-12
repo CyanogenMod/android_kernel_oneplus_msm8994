@@ -977,6 +977,7 @@ static void rndis_ipa_tx_complete_notify(void *private,
 
 	atomic_dec(&rndis_ipa_ctx->outstanding_pkts);
 	if (netif_queue_stopped(rndis_ipa_ctx->net) &&
+		netif_carrier_ok(rndis_ipa_ctx->net) &&
 		atomic_read(&rndis_ipa_ctx->outstanding_pkts) <
 					(rndis_ipa_ctx->outstanding_low)) {
 		RNDIS_IPA_DEBUG("outstanding low boundary reached (%d)n",
@@ -1087,6 +1088,7 @@ static void rndis_ipa_packet_receive_notify(void *private,
 	struct sk_buff *skb = (struct sk_buff *)data;
 	struct rndis_ipa_dev *rndis_ipa_ctx = private;
 	int result;
+	unsigned int packet_len = skb->len;
 
 	RNDIS_IPA_DEBUG("packet Rx, len=%d\n",
 		skb->len);
@@ -1123,7 +1125,7 @@ static void rndis_ipa_packet_receive_notify(void *private,
 	if (result)
 		RNDIS_IPA_ERROR("fail on netif_rx_ni\n");
 	rndis_ipa_ctx->net->stats.rx_packets++;
-	rndis_ipa_ctx->net->stats.rx_bytes += skb->len;
+	rndis_ipa_ctx->net->stats.rx_bytes += packet_len;
 
 	return;
 }
@@ -1691,18 +1693,18 @@ static int rndis_ipa_create_rm_resource(struct rndis_ipa_dev *rndis_ipa_ctx)
 
 	RNDIS_IPA_DEBUG("rm_it client was created\n");
 
-	result = ipa_rm_add_dependency(DRV_RESOURCE_ID,
+	result = ipa_rm_add_dependency_sync(DRV_RESOURCE_ID,
 				IPA_RM_RESOURCE_USB_CONS);
 
-	if (result)
+	if (result && result != -EINPROGRESS)
 		RNDIS_IPA_ERROR("unable to add RNDIS/USB dependency (%d)\n",
 				result);
 	else
 		RNDIS_IPA_DEBUG("RNDIS/USB dependency was set\n");
 
-	result = ipa_rm_add_dependency(IPA_RM_RESOURCE_USB_PROD,
+	result = ipa_rm_add_dependency_sync(IPA_RM_RESOURCE_USB_PROD,
 				IPA_RM_RESOURCE_APPS_CONS);
-	if (result)
+	if (result && result != -EINPROGRESS)
 		RNDIS_IPA_ERROR("unable to add USB/APPS dependency (%d)\n",
 				result);
 	else
@@ -1735,7 +1737,7 @@ static int rndis_ipa_destory_rm_resource(struct rndis_ipa_dev *rndis_ipa_ctx)
 
 	result = ipa_rm_delete_dependency(DRV_RESOURCE_ID,
 			IPA_RM_RESOURCE_USB_CONS);
-	if (result) {
+	if (result && result != -EINPROGRESS) {
 		RNDIS_IPA_ERROR("Fail to delete RNDIS/USB dependency\n");
 		goto bail;
 	}

@@ -455,7 +455,7 @@ static int rmnet_vnd_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 		break;
 
 	default:
-		LOGH("Unkown IOCTL 0x%08X", cmd);
+		LOGM("Unknown IOCTL 0x%08X", cmd);
 		rc = -EINVAL;
 	}
 
@@ -477,8 +477,6 @@ static const struct net_device_ops rmnet_data_vnd_ops = {
  *
  * Called by kernel whenever a new rmnet_data<n> device is created. Sets MTU,
  * flags, ARP type, needed headroom, etc...
- *
- * todo: What is watchdog_timeo? Do we need to explicitly set it?
  */
 static void rmnet_vnd_setup(struct net_device *dev)
 {
@@ -493,7 +491,6 @@ static void rmnet_vnd_setup(struct net_device *dev)
 	dev->mtu = RMNET_DATA_DFLT_PACKET_SIZE;
 	dev->needed_headroom = RMNET_DATA_NEEDED_HEADROOM;
 	random_ether_addr(dev->dev_addr);
-	dev->watchdog_timeo = 1000;
 	dev->tx_queue_len = RMNET_DATA_TX_QUEUE_LEN;
 
 	/* Raw IP mode */
@@ -593,9 +590,13 @@ int rmnet_vnd_create_dev(int id, struct net_device **new_device,
 	}
 
 	if (!prefix) {
+		/* Configuring DL checksum offload on rmnet_data interfaces */
+		dev->hw_features = NETIF_F_RXCSUM;
 		/* Configuring UL checksum offload on rmnet_data interfaces */
-		dev->hw_features = NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM |
+		dev->hw_features |= NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM |
 			NETIF_F_IPV6_UDP_CSUM;
+		/* Configuring GRO on rmnet_data interfaces */
+		dev->hw_features |= NETIF_F_GRO;
 	}
 
 	rc = register_netdevice(dev);

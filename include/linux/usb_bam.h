@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2011-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -210,6 +210,7 @@ struct usb_bam_pipe_connect {
  *		can work at in bam2bam mode when connected to HS host.
  * @max_mbps_superspeed: Maximum Mbits per seconds that the USB core
  *		can work at in bam2bam mode when connected to SS host.
+ * @enable_hsusb_bam_on_boot: Enable HSUSB BAM (non-NDP) on bootup itself
  */
 struct msm_usb_bam_platform_data {
 	struct usb_bam_pipe_connect *connections;
@@ -218,10 +219,12 @@ struct msm_usb_bam_platform_data {
 	phys_addr_t usb_bam_fifo_baseaddr;
 	bool ignore_core_reset_ack;
 	bool reset_on_connect[MAX_BAMS];
+	bool reset_on_disconnect[MAX_BAMS];
 	bool disable_clk_gating;
 	u32 override_threshold;
 	u32 max_mbps_highspeed;
 	u32 max_mbps_superspeed;
+	bool enable_hsusb_bam_on_boot;
 };
 
 #ifdef CONFIG_USB_BAM

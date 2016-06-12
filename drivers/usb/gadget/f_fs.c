@@ -312,6 +312,7 @@ struct ffs_ep {
 	u8				num;
 
 	int				status;	/* P: epfile->mutex */
+	bool				is_busy;
 };
 
 struct ffs_epfile {
@@ -758,6 +759,8 @@ static void ffs_epfile_io_complete(struct usb_ep *_ep, struct usb_request *req)
 	if (ep && ep->req && likely(req->context)) {
 		struct ffs_ep *ep = _ep->driver_data;
 		ep->status = req->status ? req->status : req->actual;
+		/* Set is_busy false to indicate completion of last request */
+		ep->is_busy = false;
 		complete(req->context);
 	}
 }
@@ -821,15 +824,28 @@ first_try:
 			}
 		}
 
-		buffer_len = !read ? len : round_up(len,
+		spin_lock_irq(&epfile->ffs->eps_lock);
+		/*
+		 * While we were acquiring lock endpoint got disabled
+		 * (disconnect) or changed (composition switch) ?
+		 */
+		if (epfile->ep == ep) {
+			buffer_len = !read ? len : round_up(len,
 						ep->ep->desc->wMaxPacketSize);
+		} else {
+			spin_unlock_irq(&epfile->ffs->eps_lock);
+			ret = -ENODEV;
+			goto error;
+		}
 
 		/* Do we halt? */
 		halt = !read == !epfile->in;
 		if (halt && epfile->isoc) {
+			spin_unlock_irq(&epfile->ffs->eps_lock);
 			ret = -EINVAL;
 			goto error;
 		}
+		spin_unlock_irq(&epfile->ffs->eps_lock);
 
 		/* Allocate & copy */
 		if (!halt && !data) {
@@ -876,6 +892,7 @@ first_try:
 		req->complete = ffs_epfile_io_complete;
 		req->buf      = data;
 		req->length   = buffer_len;
+		ret           = 0;
 
 		if (read) {
 			INIT_COMPLETION(ffs->epout_completion);
@@ -884,7 +901,12 @@ first_try:
 			INIT_COMPLETION(ffs->epin_completion);
 			req->context  = done = &ffs->epin_completion;
 		}
-		ret = usb_ep_queue(ep->ep, req, GFP_ATOMIC);
+
+		/* Don't queue another read request if previous is still busy */
+		if (!(read && ep->is_busy)) {
+			ret = usb_ep_queue(ep->ep, req, GFP_ATOMIC);
+			ep->is_busy = true;
+		}
 
 		spin_unlock_irq(&epfile->ffs->eps_lock);
 
@@ -1679,6 +1701,14 @@ static int ffs_func_eps_enable(struct ffs_function *func)
 
 		ep->ep->driver_data = ep;
 		ep->ep->desc = ds;
+
+		ret = config_ep_by_speed(func->gadget, &func->function, ep->ep);
+		if (ret) {
+			pr_err("%s(): config_ep_by_speed(%d) err for %s\n",
+						__func__, ret, ep->ep->name);
+			break;
+		}
+
 		ret = usb_ep_enable(ep->ep);
 		if (likely(!ret)) {
 			epfile->ep = ep;

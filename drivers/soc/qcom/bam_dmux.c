@@ -704,7 +704,8 @@ static void handle_bam_mux_cmd(struct work_struct *work)
 	switch (rx_hdr->cmd) {
 	case BAM_MUX_HDR_CMD_DATA:
 		if (rx_hdr->pkt_len == 0xffff)
-			rx_hdr->pkt_len = sps_size;
+			/* SPS includes the header bytes, need just payload */
+			rx_hdr->pkt_len = sps_size - sizeof(*rx_hdr);
 		DBG_INC_READ_CNT(rx_hdr->pkt_len);
 		bam_mux_process_data(rx_skb);
 		break;
@@ -2283,7 +2284,7 @@ static int bam_init(void)
 	a2_props.virt_addr = a2_virt_addr;
 	a2_props.virt_size = a2_phys_size;
 	a2_props.irq = a2_bam_irq;
-	a2_props.options = SPS_BAM_OPT_IRQ_WAKEUP;
+	a2_props.options = SPS_BAM_OPT_IRQ_WAKEUP | SPS_BAM_HOLD_MEM;
 	a2_props.num_pipes = A2_NUM_PIPES;
 	a2_props.summing_threshold = A2_SUMMING_THRESHOLD;
 	a2_props.constrained_logging = true;

@@ -686,13 +686,14 @@ EXPORT_SYMBOL(slim_framer_booted);
 void slim_msg_response(struct slim_controller *ctrl, u8 *reply, u8 tid, u8 len)
 {
 	int i;
+	unsigned long flags;
 	bool async;
 	struct slim_msg_txn *txn;
 
-	spin_lock(&ctrl->txn_lock);
+	spin_lock_irqsave(&ctrl->txn_lock, flags);
 	txn = ctrl->txnt[tid];
 	if (txn == NULL || txn->rbuf == NULL) {
-		spin_unlock(&ctrl->txn_lock);
+		spin_unlock_irqrestore(&ctrl->txn_lock, flags);
 		if (txn == NULL)
 			dev_err(&ctrl->dev, "Got response to invalid TID:%d, len:%d",
 				tid, len);
@@ -706,7 +707,7 @@ void slim_msg_response(struct slim_controller *ctrl, u8 *reply, u8 tid, u8 len)
 	if (txn->comp)
 		complete(txn->comp);
 	ctrl->txnt[tid] = NULL;
-	spin_unlock(&ctrl->txn_lock);
+	spin_unlock_irqrestore(&ctrl->txn_lock, flags);
 	if (async)
 		kfree(txn);
 }
@@ -717,22 +718,24 @@ static int slim_processtxn(struct slim_controller *ctrl,
 {
 	u8 i = 0;
 	int ret = 0;
+	unsigned long flags;
+
 	if (need_tid) {
-		spin_lock(&ctrl->txn_lock);
+		spin_lock_irqsave(&ctrl->txn_lock, flags);
 		for (i = 0; i < ctrl->last_tid; i++) {
 			if (ctrl->txnt[i] == NULL)
 				break;
 		}
 		if (i >= ctrl->last_tid) {
 			if (ctrl->last_tid == 255) {
-				spin_unlock(&ctrl->txn_lock);
+				spin_unlock_irqrestore(&ctrl->txn_lock, flags);
 				return -ENOMEM;
 			}
 			ctrl->last_tid++;
 		}
 		ctrl->txnt[i] = txn;
 		txn->tid = i;
-		spin_unlock(&ctrl->txn_lock);
+		spin_unlock_irqrestore(&ctrl->txn_lock, flags);
 	}
 
 	ret = ctrl->xfer_msg(ctrl, txn);
@@ -1052,6 +1055,8 @@ int slim_xfer_msg(struct slim_controller *ctrl, struct slim_device *sbdev,
 	if (wbuf)
 		txn->rl += len;
 	if (rbuf) {
+		unsigned long flags;
+
 		txn->rl++;
 		ret = slim_processtxn(ctrl, txn, true);
 
@@ -1060,19 +1065,19 @@ int slim_xfer_msg(struct slim_controller *ctrl, struct slim_device *sbdev,
 			ret = wait_for_completion_timeout(&complete, HZ);
 			if (!ret) {
 				dev_err(&ctrl->dev, "slimbus Read timed out");
-				spin_lock(&ctrl->txn_lock);
+				spin_lock_irqsave(&ctrl->txn_lock, flags);
 				/* Invalidate the transaction */
 				ctrl->txnt[txn->tid] = NULL;
-				spin_unlock(&ctrl->txn_lock);
+				spin_unlock_irqrestore(&ctrl->txn_lock, flags);
 				ret = -ETIMEDOUT;
 			} else
 				ret = 0;
 		} else if (ret < 0 && !msg->comp) {
 			dev_err(&ctrl->dev, "slimbus Read error");
-			spin_lock(&ctrl->txn_lock);
+			spin_lock_irqsave(&ctrl->txn_lock, flags);
 			/* Invalidate the transaction */
 			ctrl->txnt[txn->tid] = NULL;
-			spin_unlock(&ctrl->txn_lock);
+			spin_unlock_irqrestore(&ctrl->txn_lock, flags);
 		}
 
 	} else
@@ -1230,6 +1235,37 @@ int slim_dealloc_mgrports(struct slim_device *sb, u32 *hdl, int nports)
 EXPORT_SYMBOL_GPL(slim_dealloc_mgrports);
 
 /*
+ * slim_config_mgrports: Configure manager side ports
+ * @sb: device/client handle.
+ * @ph: array of port handles for which this configuration is valid
+ * @nports: Number of ports in ph
+ * @cfg: configuration requested for port(s)
+ * Configure port settings if they are different than the default ones.
+ * Returns success if the config could be applied. Returns -EISCONN if the
+ * port is in use
+ */
+int slim_config_mgrports(struct slim_device *sb, u32 *ph, int nports,
+				struct slim_port_cfg *cfg)
+{
+	int i;
+	struct slim_controller *ctrl;
+	if (!sb || !ph || !nports || !sb->ctrl || !cfg)
+		return -EINVAL;
+
+	ctrl = sb->ctrl;
+	mutex_lock(&ctrl->sched.m_reconf);
+	for (i = 0; i < nports; i++) {
+		u8 pn = SLIM_HDL_TO_PORT(ph[i]);
+		if (ctrl->ports[pn].state == SLIM_P_CFG)
+			return -EISCONN;
+		ctrl->ports[pn].cfg = *cfg;
+	}
+	mutex_unlock(&ctrl->sched.m_reconf);
+	return 0;
+}
+EXPORT_SYMBOL(slim_config_mgrports);
+
+/*
  * slim_get_slaveport: Get slave port handle
  * @la: slave device logical address.
  * @idx: port index at slave
@@ -1282,8 +1318,11 @@ static int disconnect_port_ch(struct slim_controller *ctrl, u32 ph)
 	ret = slim_processtxn(ctrl, &txn, false);
 	if (ret)
 		return ret;
-	if (la == SLIM_LA_MANAGER)
+	if (la == SLIM_LA_MANAGER) {
 		ctrl->ports[pn].state = SLIM_P_UNCFG;
+		ctrl->ports[pn].cfg.watermark = 0;
+		ctrl->ports[pn].cfg.port_opts = 0;
+	}
 	return 0;
 }
 
@@ -1595,8 +1634,12 @@ static int slim_remove_ch(struct slim_controller *ctrl, struct slim_ich *slc)
 
 	ph = slc->srch;
 	la = SLIM_HDL_TO_LA(ph);
-	if (la == SLIM_LA_MANAGER)
-		ctrl->ports[SLIM_HDL_TO_PORT(ph)].state = SLIM_P_UNCFG;
+	if (la == SLIM_LA_MANAGER) {
+		u8 pn = SLIM_HDL_TO_PORT(ph);
+		ctrl->ports[pn].state = SLIM_P_UNCFG;
+		ctrl->ports[pn].cfg.watermark = 0;
+		ctrl->ports[pn].cfg.port_opts = 0;
+	}
 
 	kfree(slc->sinkh);
 	slc->sinkh = NULL;
