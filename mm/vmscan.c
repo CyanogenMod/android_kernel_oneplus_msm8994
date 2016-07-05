@@ -904,6 +904,7 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 		 *    reclaim. Wait for the writeback to complete.
 		 */
 		if (PageWriteback(page)) {
+
 			/* Case 1 above */
 			if (current_is_kswapd() &&
 			    PageReclaim(page) &&
@@ -913,7 +914,8 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 
 			/* Case 2 above */
 			} else if (global_reclaim(sc) ||
-			    !PageReclaim(page) || !(sc->gfp_mask & __GFP_IO)) {
+			    !PageReclaim(page) || !may_enter_fs) {
+
 				/*
 				 * This is slightly racy - end_page_writeback()
 				 * might have just cleared PageReclaim, then
