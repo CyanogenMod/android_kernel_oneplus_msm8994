@@ -2968,8 +2968,8 @@ static int hdd_set_rx_filter(hdd_adapter_t *adapter, bool action,
 				hddLog(LOGE, "%s RX filter : addr ="
 				    MAC_ADDRESS_STR,
 				    action ? "setting" : "clearing",
-				    MAC_ADDR_ARRAY(filter->multicastAddr[j]));
-				j++;
+				    MAC_ADDR_ARRAY(filter->multicastAddr[i]));
+				i++;
 			}
 		}
 		/* Set rx filter */

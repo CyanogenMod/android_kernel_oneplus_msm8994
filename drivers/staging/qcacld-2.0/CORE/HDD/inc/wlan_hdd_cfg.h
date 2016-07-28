@@ -2532,8 +2532,6 @@ This feature requires the dependent cfg.ini "gRoamPrefer5GHz" set to 1 */
 #define CFG_RX_HANDLE_DEFAULT                      (WLAN_HDD_RX_HANDLE_RX_THREAD)
 #endif /* MDM_PLATFORM */
 
-<<<<<<< HEAD
-=======
 /* List of RPS CPU maps for different rx queues registered by WLAN driver
  * Ref - Kernel/Documentation/networking/scaling.txt
  * RPS CPU map for a particular RX queue, selects CPU(s) for bottom half
@@ -2575,7 +2573,6 @@ This feature requires the dependent cfg.ini "gRoamPrefer5GHz" set to 1 */
  */
 #define CFG_RPS_RX_QUEUE_CPU_MAP_LIST_LEN 30
 
->>>>>>> 775ffb5... qcacld-2.0: Fix the issue of rpsRxQueueCpuMapList
 /* SAR Thermal limit values for 2g and 5g */
 
 #define CFG_SET_TXPOWER_LIMIT2G_NAME               "TxPower2g"
