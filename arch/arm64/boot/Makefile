@@ -15,10 +15,7 @@
 #
 
 #include $(srctree)/arch/arm64/boot/dts/Makefile
-include $(srctree)/arch/arm64/boot/dts/14049_HW_11/Makefile
-include $(srctree)/arch/arm64/boot/dts/14049_HW_12/Makefile
-include $(srctree)/arch/arm64/boot/dts/14049_HW_13/Makefile
-include $(srctree)/arch/arm64/boot/dts/14049_HW_14/Makefile
+include $(srctree)/arch/arm64/boot/dts/14049_HW/Makefile
 targets := Image Image.gz
 
 DTB_NAMES := $(subst $\",,$(CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES))
